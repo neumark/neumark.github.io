@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta http-equiv="Content-Type" content="text/html;charset=utf-8" />
+        <style>
+            body {
+                font-family: monospace;
+            }
+            pre {
+                font-size: 16px;
+            }
+            img.docpic {
+                width: 400px;
+            }
+        </style>
+    </head>
+    <body>
+
+    <script>
+        const render = data => {
+            // field names are column names from the sheet
+            data.forEach(({név, leírás, kép}) => {
+                const div = document.createElement('div')
+                div.innerHTML = `<h1>${név}</h1>
+                                 <a href="${kép}"><img class="docpic" src="${kép}" /></a>
+                                 <br />
+                                 <p>${leírás}</p>`
+                document.body.appendChild(div);
+            })
+        };
+        window.google = {
+            visualization: {
+                Query: {
+                            // the JSONP response invokes this function when data is loaded
+                            setResponse: (data) => {
+                                // based on https://stackoverflow.com/a/66475916
+                                const readRow = row => row.c.map(r => r.v)
+                                const headers = readRow(data.table.rows[0]);
+                                const parsedData = data.table.rows.slice(1).map(row => 
+                                    readRow(row).reduce((acc, val, ix) => {
+                                        if (ix <= headers.length) {
+                                            acc[headers[ix]] = val;
+                                        }
+                                        return acc;
+                                    }, {})
+                                );
+                                render(parsedData)
+                            }
+                }
+            }
+        }
+    </script>
+    <!-- load sheet data as JSONP -->
+    <script src="https://docs.google.com/spreadsheets/d/1UrMcpmoDrIzWWNKnEQwknPUhgKHhL3PQKkNQUDBPFUk/gviz/tq?tqx=out:json"></script>
+    </body>
+</html>
