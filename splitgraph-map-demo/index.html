@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Display buildings in 3D</title>
+    <meta
+      name="viewport"
+      content="initial-scale=1,maximum-scale=1,user-scalable=no"
+    />
+    <link
+      href="https://api.mapbox.com/mapbox-gl-js/v2.8.2/mapbox-gl.css"
+      rel="stylesheet"
+    />
+    <script src="https://api.mapbox.com/mapbox-gl-js/v2.8.2/mapbox-gl.js"></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      #map {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 100%;
+      }
+      .marker {
+        background-image: url("https://media.istockphoto.com/photos/two-men-reporting-a-car-crash-for-insurance-claim-picture-id1047083324?k=20&m=1047083324&s=612x612&w=0&h=9IzL_PH9xNK5TliK-touOVFfSmxgLwNR04XLxKHHmx0="); /*url('https://docs.mapbox.com/mapbox-gl-js/assets/washington-monument.jpg');*/
+        background-size: cover;
+        width: 50px;
+        height: 50px;
+        border-radius: 50%;
+        cursor: pointer;
+      }
+      .mapboxgl-popup {
+        max-width: 200px;
+      }
+
+      .map-overlay {
+        font: 12px/20px "Helvetica Neue", Arial, Helvetica, sans-serif;
+        position: absolute;
+        width: 350px;
+        top: 0;
+        left: 0;
+        padding: 10px;
+      }
+
+      .map-overlay .map-overlay-inner {
+        background-color: #fff;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+        border-radius: 3px;
+        padding: 10px;
+        margin-bottom: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <div class="map-overlay top">
+      <div class="map-overlay-inner">
+        <h3>Traffic accidents</h3>
+        <ul id="accidents"></ul>
+      </div>
+    </div>
+
+    <script>
+      // Splitgraph query function is based on
+      // https://observablehq.com/@splitgraph/ddn
+      const query = async function (query) {
+        const options = {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ sql: query }),
+        };
+        const json = await (
+          await fetch("https://data.splitgraph.com/sql/query/ddn", options)
+        ).json();
+        if (json.error) {
+          throw new Error(json.error.replace(/^error: /, ""));
+        }
+        const objMap = (fn, input) =>
+          Object.fromEntries(Object.entries(input).map(fn));
+        const columns = Object.fromEntries(
+          json.fields.map(({ name, formattedType }) => [name, formattedType])
+        );
+        const toValue = (type, value) => {
+          switch (type) {
+            case "DATE":
+              return new Date(value);
+            case "NUMERIC":
+              return parseFloat(value);
+            case "INT8":
+              return parseInt(value, 10);
+            default:
+              return value;
+          }
+        };
+        const convert = (data) =>
+          objMap(([col, val]) => [col, toValue(columns[col], val)], data);
+        return json.rows.map(convert);
+      };
+
+      // TO MAKE THE MAP APPEAR YOU MUST
+      // ADD YOUR ACCESS TOKEN FROM
+      // https://account.mapbox.com
+      mapboxgl.accessToken =
+        "pk.eyJ1IjoicGV0ZXJuZXVtYXJrIiwiYSI6ImNsNDg3cDRmbjAwY2EzYnJ3c2J2cGw0NW8ifQ.3XF-Xh1c-eDSpGJTY8T8bA";
+      const map = new mapboxgl.Map({
+        style: "mapbox://styles/mapbox/streets-v11", // 'mapbox://styles/mapbox/light-v10',
+        center: [-97.3, 32.7], // [-74.0066, 40.7135],
+        zoom: 12,
+        pitch: 45,
+        bearing: -17.6,
+        container: "map",
+        antialias: true,
+      });
+
+      let accidents = [];
+
+      const showAccident = (ix) => {
+        map.flyTo({
+          center: [accidents[ix].longitude, accidents[ix].latitude],
+          zoom: 20,
+        });
+        // don't propagate the click event;
+        return false;
+      };
+
+      map.on("load", async () => {
+        // Insert the layer beneath any symbol layer.
+        accidents = await query(`
+            SELECT
+                "longitude",
+                "latitude",
+                "address",
+                "description",
+                "updatetime"
+            FROM
+                "fortworthtexas-gov/current-traffic-accidents-eax3-qev8:latest"."current_traffic_accidents"
+            ORDER by "updatetime" DESC
+            LIMIT 100`);
+        accidents
+          .map(
+            ({ updatetime, longitude, latitude, address, description }, ix) => {
+              const li = document.createElement("li");
+              li.innerHTML = `
+            ${description} at
+            <a href="#" onclick="showAccident(${ix});">${address}</a>
+            (${Math.round(
+              (Date.now() - updatetime.getTime()) / (1000 * 3600)
+            )} hours ago).
+            `;
+              return li;
+            }
+          )
+          .forEach((li) =>
+            document.getElementById("accidents").appendChild(li)
+          );
+
+        const layers = map.getStyle().layers;
+        const labelLayerId = layers.find(
+          (layer) => layer.type === "symbol" && layer.layout["text-field"]
+        ).id;
+
+        // The 'building' layer in the Mapbox Streets
+        // vector tileset contains building height data
+        // from OpenStreetMap.
+        map.addLayer(
+          {
+            id: "add-3d-buildings",
+            source: "composite",
+            "source-layer": "building",
+            filter: ["==", "extrude", "true"],
+            type: "fill-extrusion",
+            minzoom: 15,
+            paint: {
+              "fill-extrusion-color": "#aaa",
+
+              // Use an 'interpolate' expression to
+              // add a smooth transition effect to
+              // the buildings as the user zooms in.
+              "fill-extrusion-height": [
+                "interpolate",
+                ["linear"],
+                ["zoom"],
+                15,
+                0,
+                15.05,
+                ["get", "height"],
+              ],
+              "fill-extrusion-base": [
+                "interpolate",
+                ["linear"],
+                ["zoom"],
+                15,
+                0,
+                15.05,
+                ["get", "min_height"],
+              ],
+              "fill-extrusion-opacity": 0.6,
+            },
+          },
+          labelLayerId
+        );
+
+        // See repo page: https://www.splitgraph.com/fortworthtexas-gov/vehicle-accident-data-kr8h-9zxd
+        const getAccidentsInArea = async (longitude, latitude) => query(`
+          SELECT
+            count(0) as total,
+            MAX(crashdatetime) as latest,
+            MIN(crashdatetime) as earliest
+          FROM (
+            SELECT
+              "crashdatetime",
+              "streetname",
+              "fatality", -- Did a fatality occur?
+              "hitandrun", -- Was the incident a hit and run?
+              cast("location_1"->>'latitude' as double precision) as latitude,
+              cast("location_1"->>'longitude' as double precision) as longitude
+            FROM
+              "fortworthtexas-gov/vehicle-accident-data-kr8h-9zxd:latest"."vehicle_accident_data"
+          ) t
+          WHERE
+            ABS(t.latitude - ${latitude}) < 0.01 AND
+            ABS(t.longitude - ${longitude}) < 0.01
+            `)
+
+        // create markers for each accident
+        accidents.forEach(
+          ({ updatetime, longitude, latitude, address, description }, ix) => {
+            // create the popup
+            const popup = new mapboxgl.Popup({ offset: 25 }).setHTML(`
+              ${description} at ${address}
+              <div id="popup${ix}"></div>
+            `);
+            popup.on('open', async () => {
+              const [{total, latest, earliest}] = await getAccidentsInArea(longitude, latitude);
+              document.getElementById(`popup${ix}`).innerHTML = `
+              ${total} accidents in nearby area (${earliest.toISOString().split('T')[0]} to ${latest.toISOString().split('T')[0]})<br />
+              <a href="https://www.splitgraph.com/workspace/ddn?layout=hsplit&query=SELECT%0A++t.*%0AFROM+%28%0A++SELECT+%0A++++%22crashdatetime%22%2C%0A++++%22streetname%22%2C%0A++++%22fatality%22%2C+--+Did+a+fatality+occur%3F%0A++++%22hitandrun%22%2C+--+Was+the+incident+a+hit+and+run%3F%0A++++cast%28%22location_1%22-%3E%3E%27latitude%27+as+double+precision%29+as+latitude%2C%0A++++cast%28%22location_1%22-%3E%3E%27longitude%27+as+double+precision%29+as+longitude%0A++FROM%0A++++%22fortworthtexas-gov%2Fvehicle-accident-data-kr8h-9zxd%3Alatest%22.%22vehicle_accident_data%22%0A%29+t%0AWHERE%0A++ABS%28t.latitude+-+${latitude}%29+%3C+0.01+AND%0A++ABS%28t.longitude+-+${longitude}%29+%3C+0.01%0AORDER+by+crashdatetime+DESC">Query these accidents on Splitgraph</a>
+              `
+            });
+            // create DOM element for the marker
+            const el = document.createElement("div");
+            el.className = "marker";
+
+            // create the marker
+            new mapboxgl.Marker(el)
+              .setLngLat([longitude, latitude])
+              .setPopup(popup) // sets a popup on this marker
+              .addTo(map);
+          }
+        );
+      });
+    </script>
+  </body>
+</html>
